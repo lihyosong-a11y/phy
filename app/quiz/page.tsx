@@ -197,59 +197,94 @@ export default function QuizPage() {
     }
   };
 
-  // 2. 단원 선택 및 학생 로그인 성공 시 고유 수치 값을 난수로 생성하여 문제 세팅
-  const generateDynamicQuestions = (unitFilter: string) => {
-    const filteredTemplates = dbQuestions.filter(
+  // 2. 단원 선택 및 학생 로그인 성공 시 고유 수치 값을 난수로 생성하여 문제 세팅 (AI 생성 우선 시도, 실패 시 로컬 난수 치환 폴백)
+  const generateDynamicQuestions = async (unitFilter: string, overrideQuestions?: any[]) => {
+    const sourceQuestions = overrideQuestions || dbQuestions;
+    const filteredTemplates = sourceQuestions.filter(
       (q) => unitFilter === "전체" || q.unit === unitFilter
     );
 
-    const generated = filteredTemplates.map((template) => {
-      const variables: { [key: string]: number } = {};
+    if (filteredTemplates.length === 0) {
+      setCurrentQuestions([]);
+      return;
+    }
 
-      Object.keys(template.variable_config).forEach((varName) => {
-        const config = template.variable_config[varName];
-        const min = config.min;
-        const max = config.max;
-        const step = config.step || 1;
-
-        const stepsCount = Math.floor((max - min) / step);
-        const randomSteps = Math.floor(Math.random() * (stepsCount + 1));
-        const val = min + randomSteps * step;
-
-        variables[varName] = parseFloat(val.toFixed(2));
-      });
-
-      let formula = template.answer_formula;
-      Object.keys(variables).forEach((varName) => {
-        formula = formula.replaceAll(varName, variables[varName].toString());
-      });
-
-      let calculatedAnswer = 0;
-      try {
-        // eslint-disable-next-line no-eval
-        calculatedAnswer = parseFloat(eval(formula).toFixed(2));
-      } catch (e) {
-        console.error("공식 계산 에러:", e);
-      }
-
-      let renderedText = template.template_text;
-      Object.keys(variables).forEach((varName) => {
-        renderedText = renderedText.replace(`{${varName}}`, variables[varName].toString());
-      });
-
-      return {
-        ...template,
-        renderedText,
-        variables,
-        calculatedAnswer
-      };
-    });
-
-    setCurrentQuestions(generated);
+    setLoading(true);
     setStudentAnswers({});
     setSubmissionStatus({});
     setAiFeedback({});
     setAiLoading({});
+
+    try {
+      // 1. OpenAI 기반 출제 백엔드 호출
+      const res = await fetch("/api/generate-questions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ templates: filteredTemplates })
+      });
+
+      if (!res.ok) {
+        throw new Error("AI 문제 생성 API 응답 실패");
+      }
+
+      const data = await res.json();
+      if (data.questions && Array.isArray(data.questions)) {
+        setCurrentQuestions(data.questions);
+        console.log("AI 동적 출제 문제 수신 완료:", data.questions);
+        setLoading(false);
+        return;
+      }
+      throw new Error("유효하지 않은 응답 데이터 형식");
+    } catch (err: any) {
+      console.warn("AI 기반 문제 출제 실패, 로컬 난수 치환 폴백을 가동합니다:", err.message);
+      
+      // 2. 로컬 난수 치환 폴백 가동
+      const generatedFallback = filteredTemplates.map((template) => {
+        const variables: { [key: string]: number } = {};
+
+        Object.keys(template.variable_config).forEach((varName) => {
+          const config = template.variable_config[varName];
+          const min = config.min;
+          const max = config.max;
+          const step = config.step || 1;
+
+          const stepsCount = Math.floor((max - min) / step);
+          const randomSteps = Math.floor(Math.random() * (stepsCount + 1));
+          const val = min + randomSteps * step;
+
+          variables[varName] = parseFloat(val.toFixed(2));
+        });
+
+        let formula = template.answer_formula;
+        Object.keys(variables).forEach((varName) => {
+          formula = formula.replaceAll(varName, variables[varName].toString());
+        });
+
+        let calculatedAnswer = 0;
+        try {
+          // eslint-disable-next-line no-eval
+          calculatedAnswer = parseFloat(eval(formula).toFixed(2));
+        } catch (e) {
+          console.error("공식 계산 에러:", e);
+        }
+
+        let renderedText = template.template_text;
+        Object.keys(variables).forEach((varName) => {
+          renderedText = renderedText.replace(`{${varName}}`, variables[varName].toString());
+        });
+
+        return {
+          ...template,
+          renderedText,
+          variables,
+          calculatedAnswer
+        };
+      });
+
+      setCurrentQuestions(generatedFallback);
+    } finally {
+      setLoading(false);
+    }
   };
 
   // 학생 로그인 처리
