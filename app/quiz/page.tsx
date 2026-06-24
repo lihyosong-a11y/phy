@@ -18,10 +18,13 @@ import {
   Unlock,
   Key,
   Sparkles,
-  LogOut
+  LogOut,
+  Plus,
+  Trash2,
+  List
 } from "lucide-react";
 
-// Supabase가 연결되지 않았을 때 작동할 로컬 오프라인 문제 폴백(Fallback) 데이터
+// Supabase가 연결되지 않았을 때 작동할 로컬 오프라인 문제 폴백(Fallback) 데이터 (기본 템플릿)
 const OFFLINE_QUESTIONS = [
   {
     id: 1,
@@ -30,7 +33,8 @@ const OFFLINE_QUESTIONS = [
     template_text: "마찰이 없는 수평면 위에 놓인 질량 {mass} kg의 물체에 {force} N의 일정한 힘을 수평 방향으로 가했습니다. 이때 물체의 가속도의 크기는 얼마인가요?",
     variable_config: { mass: { min: 2, max: 10, step: 1 }, force: { min: 10, max: 50, step: 5 } },
     answer_formula: "force / mass",
-    unit_symbol: "m/s²"
+    unit_symbol: "m/s²",
+    correct_answer: null
   },
   {
     id: 2,
@@ -39,7 +43,8 @@ const OFFLINE_QUESTIONS = [
     template_text: "질량 {mass} kg인 축구공이 {velocity_1} m/s의 속도로 날아가다가 발에 맞고 반대 방향으로 {velocity_2} m/s의 속도로 튕겨 나갔습니다. 이때 발이 축구공에 가한 충격량의 크기는 얼마인가요?",
     variable_config: { mass: { min: 0.4, max: 0.8, step: 0.1 }, velocity_1: { min: 10, max: 20, step: 2 }, velocity_2: { min: 15, max: 25, step: 1 } },
     answer_formula: "mass * (velocity_1 + velocity_2)",
-    unit_symbol: "N·s"
+    unit_symbol: "N·s",
+    correct_answer: null
   },
   {
     id: 3,
@@ -48,7 +53,8 @@ const OFFLINE_QUESTIONS = [
     template_text: "저항이 {resistance} Ω인 전구에 {voltage} V의 전압을 걸었을 때, 전선에 흐르는 전류의 세기는 몇 A인가요?",
     variable_config: { resistance: { min: 5, max: 20, step: 5 }, voltage: { min: 10, max: 100, step: 10 } },
     answer_formula: "voltage / resistance",
-    unit_symbol: "A"
+    unit_symbol: "A",
+    correct_answer: null
   },
   {
     id: 4,
@@ -57,7 +63,8 @@ const OFFLINE_QUESTIONS = [
     template_text: "{voltage} V의 전원에 연결하여 {current} A의 전류가 흐르는 가전제품의 소비 전력은 몇 W인가요?",
     variable_config: { voltage: { min: 110, max: 220, step: 110 }, current: { min: 2, max: 10, step: 1 } },
     answer_formula: "voltage * current",
-    unit_symbol: "W"
+    unit_symbol: "W",
+    correct_answer: null
   }
 ];
 
@@ -81,6 +88,12 @@ export default function QuizPage() {
   // 교사용 비밀번호 입력 및 로그인 상태 관리
   const [isTeacherAuthenticated, setIsTeacherAuthenticated] = useState(false);
   const [teacherPasswordInput, setTeacherPasswordInput] = useState("");
+  const [teacherSubTab, setTeacherSubTab] = useState<"status" | "publish">("status");
+
+  // 교사용 AI 문제 출제 상태 관리
+  const [selectedTemplateUnit, setSelectedTemplateUnit] = useState("힘과 운동");
+  const [aiGeneratingQuestion, setAiGeneratingQuestion] = useState(false);
+  const [aiNewQuestion, setAiNewQuestion] = useState<any | null>(null);
 
   // 문제 및 단원 선택 상태
   const [selectedUnit, setSelectedUnit] = useState("전체");
@@ -113,7 +126,7 @@ export default function QuizPage() {
 
       // Supabase Realtime을 통한 실시간 삽입(INSERT) 감지 구독 설정
       const channel = supabase
-        .channel("student-submissions-realtime")
+        .channel("student-submissions-realtime-lms")
         .on(
           "postgres_changes",
           {
@@ -135,25 +148,71 @@ export default function QuizPage() {
     }
   }, [viewMode, isTeacherAuthenticated]);
 
+  // 교사가 출제한 문제가 실시간으로 업데이트되는 것을 학생 화면에 동기화하기 위한 정기 새로고침
+  useEffect(() => {
+    let interval: NodeJS.Timeout;
+    if (viewMode === "student" && isStudentAuthenticated && !mustChangePassword) {
+      // 5초 간격으로 출제된 문제 동기화
+      interval = setInterval(() => {
+        fetchQuestionsSilent();
+      }, 5000);
+    }
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [viewMode, isStudentAuthenticated, mustChangePassword]);
+
   const fetchQuestions = async () => {
     setLoading(true);
+    await fetchQuestionsSilent();
+    setLoading(false);
+  };
+
+  const fetchQuestionsSilent = async () => {
     try {
       const { data, error } = await supabase
         .from("questions")
         .select("*")
         .order("id", { ascending: true });
 
+      let mergedQuestions = [];
       if (error || !data || data.length === 0) {
         console.log("Supabase 연결 실패 혹은 테이블이 비어 있어 오프라인 폴백 데이터를 사용합니다.");
-        setDbQuestions(OFFLINE_QUESTIONS);
+        mergedQuestions = [...OFFLINE_QUESTIONS];
       } else {
-        setDbQuestions(data);
+        mergedQuestions = [...data];
+      }
+
+      // 로컬 스토리지에 교사가 출제한 목 질문이 있으면 병합
+      try {
+        const mockStr = localStorage.getItem("mock_db_questions") || "[]";
+        const mockQuestions = JSON.parse(mockStr);
+        mergedQuestions = [...mergedQuestions, ...mockQuestions];
+      } catch (err) {
+        console.error(err);
+      }
+
+      setDbQuestions(mergedQuestions);
+
+      // 학생이 이미 로그인된 상태이면 화면에 렌더링 중인 문제들도 갱신
+      if (isStudentAuthenticated && !mustChangePassword) {
+        // 단순 리로드 시 현재 풀고있던 답안이나 채점상태는 보존해야 하므로 currentQuestions만 갱신
+        syncStudentQuestions(mergedQuestions, selectedUnit);
       }
     } catch (e) {
       console.error("데이터베이스 통신 오류로 폴백 데이터를 로드합니다:", e);
-      setDbQuestions(OFFLINE_QUESTIONS);
-    } finally {
-      setLoading(false);
+      let fallback = [...OFFLINE_QUESTIONS];
+      try {
+        const mockStr = localStorage.getItem("mock_db_questions") || "[]";
+        const mockQuestions = JSON.parse(mockStr);
+        fallback = [...fallback, ...mockQuestions];
+      } catch (err) {
+        console.error(err);
+      }
+      setDbQuestions(fallback);
+      if (isStudentAuthenticated && !mustChangePassword) {
+        syncStudentQuestions(fallback, selectedUnit);
+      }
     }
   };
 
@@ -197,49 +256,40 @@ export default function QuizPage() {
     }
   };
 
-  // 2. 단원 선택 및 학생 로그인 성공 시 고유 수치 값을 난수로 생성하여 문제 세팅 (AI 생성 우선 시도, 실패 시 로컬 난수 치환 폴백)
-  const generateDynamicQuestions = async (unitFilter: string, overrideQuestions?: any[]) => {
+  // 2. 단원 선택 및 학생 로그인 성공 시 출제된 문제 매핑 세팅
+  const generateDynamicQuestions = (unitFilter: string, overrideQuestions?: any[]) => {
     const sourceQuestions = overrideQuestions || dbQuestions;
-    const filteredTemplates = sourceQuestions.filter(
-      (q) => unitFilter === "전체" || q.unit === unitFilter
-    );
 
-    if (filteredTemplates.length === 0) {
+    // 만약 DB에 교사가 직접 출제한 문제(correct_answer가 null이 아닌 문제)가 하나라도 존재한다면,
+    // 학생에게는 교사가 출제한 문제들만 보여주고, 그렇지 않다면 기본 템플릿 문제를 난수 대입하여 데모로 보여줍니다.
+    const teacherPublishedQuestions = sourceQuestions.filter(q => q.correct_answer !== null && q.correct_answer !== undefined);
+    
+    let targetTemplates = [];
+    let isConcreteMode = false;
+    
+    if (teacherPublishedQuestions.length > 0) {
+      targetTemplates = teacherPublishedQuestions.filter(q => unitFilter === "전체" || q.unit === unitFilter);
+      isConcreteMode = true;
+    } else {
+      targetTemplates = sourceQuestions.filter(q => q.correct_answer === null && (unitFilter === "전체" || q.unit === unitFilter));
+    }
+
+    if (targetTemplates.length === 0) {
       setCurrentQuestions([]);
       return;
     }
 
-    setLoading(true);
-    setStudentAnswers({});
-    setSubmissionStatus({});
-    setAiFeedback({});
-    setAiLoading({});
-
-    try {
-      // 1. OpenAI 기반 출제 백엔드 호출
-      const res = await fetch("/api/generate-questions", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ templates: filteredTemplates })
-      });
-
-      if (!res.ok) {
-        throw new Error("AI 문제 생성 API 응답 실패");
-      }
-
-      const data = await res.json();
-      if (data.questions && Array.isArray(data.questions)) {
-        setCurrentQuestions(data.questions);
-        console.log("AI 동적 출제 문제 수신 완료:", data.questions);
-        setLoading(false);
-        return;
-      }
-      throw new Error("유효하지 않은 응답 데이터 형식");
-    } catch (err: any) {
-      console.warn("AI 기반 문제 출제 실패, 로컬 난수 치환 폴백을 가동합니다:", err.message);
-      
-      // 2. 로컬 난수 치환 폴백 가동
-      const generatedFallback = filteredTemplates.map((template) => {
+    const generated = targetTemplates.map((template) => {
+      if (isConcreteMode) {
+        // 교사가 AI로 출제해 등록한 실제 지문형태 (난수 대입 불요)
+        return {
+          ...template,
+          renderedText: template.template_text,
+          variables: template.variable_config || {},
+          calculatedAnswer: template.correct_answer
+        };
+      } else {
+        // 기존 템플릿 난수 대입형태 (교사 출제 문제가 하나도 없을 때의 데모 모드)
         const variables: { [key: string]: number } = {};
 
         Object.keys(template.variable_config).forEach((varName) => {
@@ -279,12 +329,69 @@ export default function QuizPage() {
           variables,
           calculatedAnswer
         };
-      });
+      }
+    });
 
-      setCurrentQuestions(generatedFallback);
-    } finally {
-      setLoading(false);
+    setCurrentQuestions(generated);
+    setStudentAnswers({});
+    setSubmissionStatus({});
+    setAiFeedback({});
+    setAiLoading({});
+  };
+
+  // 학생 실시간 동기화용 백그라운드 갱신 함수 (입력값 보존을 위함)
+  const syncStudentQuestions = (newDbQuestions: any[], unitFilter: string) => {
+    const teacherPublishedQuestions = newDbQuestions.filter(q => q.correct_answer !== null && q.correct_answer !== undefined);
+    
+    let targetTemplates = [];
+    let isConcreteMode = false;
+    
+    if (teacherPublishedQuestions.length > 0) {
+      targetTemplates = teacherPublishedQuestions.filter(q => unitFilter === "전체" || q.unit === unitFilter);
+      isConcreteMode = true;
+    } else {
+      targetTemplates = newDbQuestions.filter(q => q.correct_answer === null && (unitFilter === "전체" || q.unit === unitFilter));
     }
+
+    const generated = targetTemplates.map((template) => {
+      // 이미 렌더링 중이던 문제인지 식별
+      const existing = currentQuestions.find(cq => cq.id === template.id);
+      if (existing) {
+        return existing; // 채점 상태 유지를 위해 기존 레코드 보존
+      }
+
+      if (isConcreteMode) {
+        return {
+          ...template,
+          renderedText: template.template_text,
+          variables: template.variable_config || {},
+          calculatedAnswer: template.correct_answer
+        };
+      } else {
+        // 데모 템플릿
+        const variables: { [key: string]: number } = {};
+        Object.keys(template.variable_config).forEach((varName) => {
+          const config = template.variable_config[varName];
+          variables[varName] = config.min; // 단순 기본값 치환
+        });
+        let formula = template.answer_formula;
+        Object.keys(variables).forEach((varName) => {
+          formula = formula.replaceAll(varName, variables[varName].toString());
+        });
+        let calculatedAnswer = 0;
+        try {
+          // eslint-disable-next-line no-eval
+          calculatedAnswer = parseFloat(eval(formula).toFixed(2));
+        } catch (e) {}
+        let renderedText = template.template_text;
+        Object.keys(variables).forEach((varName) => {
+          renderedText = renderedText.replace(`{${varName}}`, variables[varName].toString());
+        });
+        return { ...template, renderedText, variables, calculatedAnswer };
+      }
+    });
+
+    setCurrentQuestions(generated);
   };
 
   // 학생 로그인 처리
@@ -300,7 +407,6 @@ export default function QuizPage() {
 
     setLoading(true);
     try {
-      // 1. Supabase에서 학번으로 사용자 조회
       const { data, error } = await supabase
         .from("student_users")
         .select("*")
@@ -308,13 +414,11 @@ export default function QuizPage() {
         .single();
 
       if (error && error.code !== "PGRST116") {
-        // PGRST116: 결과 없음
         throw new Error(error.message);
       }
 
       if (!data) {
-        // 2. 존재하지 않는 학번인 경우 -> 첫 로그인 회원가입 시도
-        // 첫 로그인 시 초기 비밀번호는 학번이어야 함
+        // 첫 로그인 회원가입 시도 (비번 = 학번)
         if (cleanPassword === cleanNumber) {
           const { error: insertError } = await supabase
             .from("student_users")
@@ -330,7 +434,6 @@ export default function QuizPage() {
             throw new Error(insertError.message);
           }
 
-          // 로그인 성공 및 비밀번호 즉시 변경 유도
           setIsStudentAuthenticated(true);
           setMustChangePassword(true);
           alert("최초 로그인에 성공했습니다! 안전을 위해 비밀번호를 즉시 변경해 주세요.");
@@ -338,7 +441,6 @@ export default function QuizPage() {
           alert("등록되지 않은 학번입니다. 최초 로그인 시 비밀번호는 학번과 동일하게 입력해야 합니다.");
         }
       } else {
-        // 3. 존재하는 학번인 경우 -> 비밀번호 대조
         if (data.password === cleanPassword) {
           setIsStudentAuthenticated(true);
           if (!data.is_password_changed) {
@@ -353,9 +455,8 @@ export default function QuizPage() {
         }
       }
     } catch (e: any) {
-      console.warn("Supabase 로그인 중 에러가 발생하여 로컬 스토리지 기반 폴백 인증을 수행합니다:", e.message);
+      console.warn("Supabase 로그인 에러로 로컬 폴백 인증을 가동합니다:", e.message);
       
-      // 로컬 스토리지 폴백 처리
       try {
         const usersStr = localStorage.getItem("mock_student_users") || "[]";
         const users = JSON.parse(usersStr);
@@ -363,7 +464,6 @@ export default function QuizPage() {
 
         if (!matchedUser) {
           if (cleanPassword === cleanNumber) {
-            // 회원 생성
             const newUser = {
               student_number: cleanNumber,
               password: cleanPassword,
@@ -374,9 +474,9 @@ export default function QuizPage() {
 
             setIsStudentAuthenticated(true);
             setMustChangePassword(true);
-            alert("최초 로그인에 성공했습니다! (로컬 모드) 안전을 위해 비밀번호를 즉시 변경해 주세요.");
+            alert("최초 로그인에 성공했습니다! (로컬 모드) 비밀번호를 변경해 주세요.");
           } else {
-            alert("등록되지 않은 학번입니다. (로컬 모드) 최초 로그인 시 비밀번호는 학번과 동일해야 합니다.");
+            alert("등록되지 않은 학번입니다. (로컬 모드) 최초 비밀번호는 학번입니다.");
           }
         } else {
           if (matchedUser.password === cleanPassword) {
@@ -394,7 +494,7 @@ export default function QuizPage() {
         }
       } catch (err) {
         console.error(err);
-        alert("로그인 처리 도중 시스템 에러가 발생했습니다.");
+        alert("로그인 처리 중 시스템 오류가 발생했습니다.");
       }
     } finally {
       setLoading(false);
@@ -434,11 +534,11 @@ export default function QuizPage() {
         throw new Error(error.message);
       }
 
-      alert("비밀번호 변경 완료! 이제 퀴즈를 풀 수 있습니다.");
+      alert("비밀번호 변경 완료! 출제된 퀴즈를 풀 수 있습니다.");
       setMustChangePassword(false);
       generateDynamicQuestions(selectedUnit);
     } catch (e: any) {
-      console.warn("Supabase 비밀번호 갱신 실패, 로컬 스토리지 폴백을 진행합니다:", e.message);
+      console.warn("Supabase 비밀번호 갱신 실패, 로컬 폴백을 진행합니다:", e.message);
 
       try {
         const usersStr = localStorage.getItem("mock_student_users") || "[]";
@@ -452,7 +552,7 @@ export default function QuizPage() {
           setMustChangePassword(false);
           generateDynamicQuestions(selectedUnit);
         } else {
-          alert("비밀번호 변경 중 학번 사용자 정보를 찾을 수 없습니다.");
+          alert("비밀번호 변경 중 사용자 정보를 찾을 수 없습니다.");
         }
       } catch (err) {
         console.error(err);
@@ -493,7 +593,7 @@ export default function QuizPage() {
     }));
   };
 
-  // 3. 학생 답안 제출 및 채점 결과 저장 & OpenAI 피드백 연동
+  // 학생 답안 제출 및 채점 결과 저장 & OpenAI 피드백 연동
   const handleAnswerSubmit = async (q: any) => {
     const submittedVal = parseFloat(studentAnswers[q.id]);
     if (isNaN(submittedVal)) {
@@ -608,6 +708,142 @@ export default function QuizPage() {
     }
   };
 
+  // 교사 AI 문제 생성 핸들러
+  const handleTeacherGenerateQuestion = async () => {
+    // correct_answer가 null인 것들이 출제 기준이 되는 템플릿
+    const templates = dbQuestions.filter(
+      (q) => q.correct_answer === null && q.unit === selectedTemplateUnit
+    );
+
+    if (templates.length === 0) {
+      alert("출제할 수 있는 해당 단원의 기본 템플릿이 없습니다. (데이터베이스를 확인하세요)");
+      return;
+    }
+
+    setAiGeneratingQuestion(true);
+    setAiNewQuestion(null);
+
+    try {
+      const res = await fetch("/api/teacher/generate-question", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          unit: selectedTemplateUnit,
+          templates
+        })
+      });
+
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}));
+        throw new Error(errorData.error || "AI 문제 생성 서버 오류");
+      }
+
+      const data = await res.json();
+      if (data.question) {
+        setAiNewQuestion(data.question);
+      } else {
+        alert("문제 생성 결과가 비어 있습니다.");
+      }
+    } catch (e: any) {
+      console.error(e);
+      alert("AI 문제 출제 도중 실패했습니다: " + e.message);
+    } finally {
+      setAiGeneratingQuestion(false);
+    }
+  };
+
+  // 교사가 생성한 AI 문제를 데이터베이스에 등록(출제)
+  const handleTeacherPublishQuestion = async () => {
+    if (!aiNewQuestion) return;
+
+    setLoading(true);
+    try {
+      const { error } = await supabase.from("questions").insert([
+        {
+          unit: aiNewQuestion.unit,
+          title: aiNewQuestion.title,
+          template_text: aiNewQuestion.renderedText,
+          variable_config: aiNewQuestion.variables,
+          answer_formula: aiNewQuestion.answer_formula,
+          unit_symbol: aiNewQuestion.unit_symbol,
+          correct_answer: aiNewQuestion.calculatedAnswer
+        }
+      ]);
+
+      if (error) {
+        throw new Error(error.message);
+      }
+
+      alert("문제가 성공적으로 출제되었습니다 (Supabase DB 저장 완료)!");
+      setAiNewQuestion(null);
+      await fetchQuestions();
+    } catch (e: any) {
+      console.warn("Supabase 문제 등록 실패, 로컬 스토리지에 백업 저장합니다:", e.message);
+
+      try {
+        const questionsStr = localStorage.getItem("mock_db_questions") || "[]";
+        const mockQuestions = JSON.parse(questionsStr);
+        mockQuestions.push({
+          id: Date.now(), // 임시 고유 키
+          unit: aiNewQuestion.unit,
+          title: aiNewQuestion.title,
+          template_text: aiNewQuestion.renderedText,
+          variable_config: aiNewQuestion.variables,
+          answer_formula: aiNewQuestion.answer_formula,
+          unit_symbol: aiNewQuestion.unit_symbol,
+          correct_answer: aiNewQuestion.calculatedAnswer,
+          created_at: new Date().toISOString()
+        });
+        localStorage.setItem("mock_db_questions", JSON.stringify(mockQuestions));
+
+        alert("문제가 성공적으로 출제되었습니다 (로컬 스토리지 백업 저장 완료)!");
+        setAiNewQuestion(null);
+        await fetchQuestions();
+      } catch (err) {
+        console.error(err);
+        alert("문제 출제 등록에 실패했습니다.");
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // 출제된 문제 삭제 핸들러
+  const handleTeacherDeleteQuestion = async (id: number) => {
+    if (!confirm("정말로 이 문제를 삭제하시겠습니까? 해당 문제가 삭제되면 학생들이 풀 수 없게 됩니다.")) {
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const { error } = await supabase.from("questions").delete().eq("id", id);
+      if (error) {
+        throw new Error(error.message);
+      }
+      alert("문제가 성공적으로 삭제되었습니다.");
+      await fetchQuestions();
+    } catch (e: any) {
+      console.warn("Supabase 삭제 실패, 로컬 스토리지 삭제를 시도합니다:", e.message);
+
+      try {
+        const questionsStr = localStorage.getItem("mock_db_questions") || "[]";
+        const mockQuestions = JSON.parse(questionsStr);
+        const filtered = mockQuestions.filter((q: any) => q.id !== id);
+        localStorage.setItem("mock_db_questions", JSON.stringify(filtered));
+
+        alert("문제가 성공적으로 삭제되었습니다. (로컬 스토리지)");
+        await fetchQuestions();
+      } catch (err) {
+        console.error(err);
+        alert("문제 삭제에 실패했습니다.");
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
   // 전체 다시 풀기 (수치 재정렬)
   const handleRegenerate = () => {
     generateDynamicQuestions(selectedUnit);
@@ -624,7 +860,7 @@ export default function QuizPage() {
             단원별 맞춤형 스마트 퀴즈
           </h1>
           <p className="text-slate-500 dark:text-slate-400 text-sm mt-1">
-            학생마다 다르게 주어지는 수치 문제를 해결하고 실시간 데이터베이스에 제출해 보세요.
+            교사가 AI로 문제를 출제하고, 학생은 출제된 문제들을 해결해 데이터베이스에 저장합니다.
           </p>
         </div>
 
@@ -790,11 +1026,16 @@ export default function QuizPage() {
                   <p className="text-xs text-slate-400 mt-1">이름 제외 완료</p>
                   
                   <div className="mt-4 pt-4 border-t border-slate-100 dark:border-slate-800 flex justify-between items-center text-xs">
-                    <span className="text-slate-500 dark:text-slate-400">데이터베이스 연동</span>
-                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-50 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-400 font-medium">
-                      <Database className="w-3 h-3" />
-                      실시간
-                    </span>
+                    <span className="text-slate-500 dark:text-slate-400">문제 모드</span>
+                    {dbQuestions.filter(q => q.correct_answer !== null).length > 0 ? (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-indigo-50 dark:bg-indigo-950/30 text-indigo-700 dark:text-indigo-400 font-medium">
+                        교사 출제 문제
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-400 font-medium">
+                        기본 템플릿(데모)
+                      </span>
+                    )}
                   </div>
 
                   <button
@@ -828,14 +1069,16 @@ export default function QuizPage() {
                   </div>
                 </div>
 
-                {/* 수치 재생성 버튼 */}
-                <button
-                  onClick={handleRegenerate}
-                  className="w-full inline-flex items-center justify-center gap-2 px-4 py-3 bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-800 rounded-xl text-sm font-semibold transition-all shadow-sm"
-                >
-                  <RefreshCw className="w-4 h-4" />
-                  <span>새로운 수치로 문제 교체</span>
-                </button>
+                {/* 수치 재생성 버튼 (템플릿 모드일 때만 의미가 있습니다) */}
+                {dbQuestions.filter(q => q.correct_answer !== null).length === 0 && (
+                  <button
+                    onClick={handleRegenerate}
+                    className="w-full inline-flex items-center justify-center gap-2 px-4 py-3 bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-800 rounded-xl text-sm font-semibold transition-all shadow-sm"
+                  >
+                    <RefreshCw className="w-4 h-4" />
+                    <span>새로운 수치로 문제 교체</span>
+                  </button>
+                )}
               </div>
 
               {/* 오른쪽 메인: 출제된 고유 문제 목록 */}
@@ -847,8 +1090,10 @@ export default function QuizPage() {
                     문제를 불러오는 중입니다...
                   </div>
                 ) : currentQuestions.length === 0 ? (
-                  <div className="p-16 text-center rounded-2xl border border-dashed border-slate-300 dark:border-slate-800 text-slate-500">
-                    선택한 단원에 출제된 문제가 없습니다.
+                  <div className="p-16 text-center rounded-3xl bg-white dark:bg-slate-900 border border-dashed border-slate-200 dark:border-slate-800 text-slate-500">
+                    <BookOpen className="w-8 h-8 mx-auto mb-2 text-slate-400" />
+                    <p className="text-sm font-medium">선택한 단원에 출제된 문제가 없습니다.</p>
+                    <p className="text-xs text-slate-400 mt-1">교사의 출제 신규 등록을 기다리는 중입니다.</p>
                   </div>
                 ) : (
                   currentQuestions.map((q) => {
@@ -940,7 +1185,7 @@ export default function QuizPage() {
                             
                             {!status.isCorrect && (
                               <>
-                                <p className="text-rose-500/80 font-medium">* 시스템 힌트: 문제 수치들을 공식({q.answer_formula})에 대입해 보세요.</p>
+                                <p className="text-rose-500/80 font-medium">* 시스템 힌트: 문제 정보를 보고 정답 공식의 규칙에 맞게 차분히 다시 풀어보세요.</p>
                                 
                                 {/* AI 피드백 튜터 공간 */}
                                 {aiLoading[q.id] && (
@@ -983,7 +1228,7 @@ export default function QuizPage() {
       )}
 
       {/* ========================================================================= */}
-      {/* [모드 B] 교사용 실시간 제출 대시보드 화면 */}
+      {/* [모드 B] 교사용 실시간 제출 대시보드 및 AI 출제 화면 */}
       {/* ========================================================================= */}
       {viewMode === "teacher" && (
         <div className="space-y-6">
@@ -995,9 +1240,9 @@ export default function QuizPage() {
                 <div className="p-3 bg-indigo-50 dark:bg-indigo-950/30 text-indigo-600 dark:text-indigo-400 rounded-2xl w-fit mx-auto mb-3">
                   <Lock className="w-8 h-8" />
                 </div>
-                <h2 className="text-xl font-bold text-slate-900 dark:text-white">교사용 실시간 현황 접근</h2>
+                <h2 className="text-xl font-bold text-slate-900 dark:text-white">교사용 영역 접근</h2>
                 <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
-                  비밀번호를 입력하여 관리 권한을 활성화합니다.
+                  비밀번호를 입력하여 교사용 대시보드 및 출제 권한을 활성화합니다.
                 </p>
               </div>
 
@@ -1028,143 +1273,303 @@ export default function QuizPage() {
             
             // ② 교사용 비밀번호 검증 완료 상태
             <>
-              {/* 통계 요약 */}
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                
-                {/* 총 제출 개수 */}
-                <div className="p-6 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm flex items-center justify-between">
-                  <div>
-                    <span className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest block mb-1">
-                      총 답변 제출
-                    </span>
-                    <span className="text-3xl font-extrabold text-slate-900 dark:text-white">
-                      {allSubmissions.length} 건
-                    </span>
-                  </div>
-                  <div className="p-3 bg-indigo-50 dark:bg-indigo-950/30 text-indigo-600 dark:text-indigo-400 rounded-xl">
-                    <Users className="w-6 h-6" />
-                  </div>
-                </div>
+              {/* 상단 서브 탭 메뉴 */}
+              <div className="flex border-b border-slate-200 dark:border-slate-800">
+                <button
+                  onClick={() => setTeacherSubTab("status")}
+                  className={`flex items-center gap-2 px-6 py-3 border-b-2 font-bold text-sm transition-all ${
+                    teacherSubTab === "status"
+                      ? "border-indigo-600 text-indigo-600 dark:border-indigo-400 dark:text-indigo-400"
+                      : "border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"
+                  }`}
+                >
+                  <List className="w-4 h-4" />
+                  실시간 풀이 현황
+                </button>
+                <button
+                  onClick={() => setTeacherSubTab("publish")}
+                  className={`flex items-center gap-2 px-6 py-3 border-b-2 font-bold text-sm transition-all ${
+                    teacherSubTab === "publish"
+                      ? "border-indigo-600 text-indigo-600 dark:border-indigo-400 dark:text-indigo-400"
+                      : "border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"
+                  }`}
+                >
+                  <Plus className="w-4 h-4" />
+                  AI 문제 출제 및 관리
+                </button>
+              </div>
 
-                {/* 정답률 계산 */}
-                {(() => {
-                  const total = allSubmissions.length;
-                  const corrects = allSubmissions.filter((s) => s.is_correct).length;
-                  const correctRate = total > 0 ? Math.round((corrects / total) * 100) : 0;
-
-                  return (
+              {/* [서브 탭 A] 실시간 풀이 현황 */}
+              {teacherSubTab === "status" && (
+                <div className="space-y-6">
+                  {/* 통계 요약 */}
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                     <div className="p-6 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm flex items-center justify-between">
                       <div>
                         <span className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest block mb-1">
-                          평균 정답률
+                          총 답변 제출
                         </span>
-                        <span className="text-3xl font-extrabold text-emerald-600 dark:text-emerald-400">
-                          {correctRate}%
+                        <span className="text-3xl font-extrabold text-slate-900 dark:text-white">
+                          {allSubmissions.length} 건
                         </span>
                       </div>
-                      <div className="p-3 bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-400 rounded-xl">
-                        <Award className="w-6 h-6" />
+                      <div className="p-3 bg-indigo-50 dark:bg-indigo-950/30 text-indigo-600 dark:text-indigo-400 rounded-xl">
+                        <Users className="w-6 h-6" />
                       </div>
                     </div>
-                  );
-                })()}
 
-                {/* DB 동기화 제어 */}
-                <div className="p-6 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col justify-between">
-                  <div className="flex justify-between items-center">
-                    <span className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest">
-                      실시간 동기화 상태
-                    </span>
-                    <div className="flex items-center gap-1.5">
-                      <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                      <span className="text-[10px] text-emerald-600 font-bold">LIVE</span>
+                    {(() => {
+                      const total = allSubmissions.length;
+                      const corrects = allSubmissions.filter((s) => s.is_correct).length;
+                      const correctRate = total > 0 ? Math.round((corrects / total) * 100) : 0;
+
+                      return (
+                        <div className="p-6 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm flex items-center justify-between">
+                          <div>
+                            <span className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest block mb-1">
+                              평균 정답률
+                            </span>
+                            <span className="text-3xl font-extrabold text-emerald-600 dark:text-emerald-400">
+                              {correctRate}%
+                            </span>
+                          </div>
+                          <div className="p-3 bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-400 rounded-xl">
+                            <Award className="w-6 h-6" />
+                          </div>
+                        </div>
+                      );
+                    })()}
+
+                    <div className="p-6 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col justify-between">
+                      <div className="flex justify-between items-center">
+                        <span className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest">
+                          실시간 동기화 상태
+                        </span>
+                        <div className="flex items-center gap-1.5">
+                          <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                          <span className="text-[10px] text-emerald-600 font-bold">LIVE</span>
+                        </div>
+                      </div>
+                      <div className="flex gap-2 mt-4">
+                        <button
+                          onClick={fetchSubmissions}
+                          disabled={refreshingTeacher}
+                          className="flex-grow py-2 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-white text-xs font-bold rounded-xl flex items-center justify-center gap-1.5 transition-all outline-none"
+                        >
+                          <RefreshCw className={`w-3.5 h-3.5 ${refreshingTeacher ? "animate-spin" : ""}`} />
+                          <span>새로고침</span>
+                        </button>
+                        <button
+                          onClick={() => setIsTeacherAuthenticated(false)}
+                          className="px-3 py-2 bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/30 dark:hover:bg-rose-900/30 text-rose-600 dark:text-rose-400 text-xs font-bold rounded-xl flex items-center justify-center transition-all outline-none"
+                          title="교사 모드 종료"
+                        >
+                          <LogOut className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     </div>
                   </div>
-                  <div className="flex gap-2 mt-4">
-                    <button
-                      onClick={fetchSubmissions}
-                      disabled={refreshingTeacher}
-                      className="flex-grow py-2 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-white text-xs font-bold rounded-xl flex items-center justify-center gap-1.5 transition-all outline-none"
-                    >
-                      <RefreshCw className={`w-3.5 h-3.5 ${refreshingTeacher ? "animate-spin" : ""}`} />
-                      <span>새로고침</span>
-                    </button>
-                    <button
-                      onClick={() => setIsTeacherAuthenticated(false)}
-                      className="px-3 py-2 bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/30 dark:hover:bg-rose-900/30 text-rose-600 dark:text-rose-400 text-xs font-bold rounded-xl flex items-center justify-center transition-all outline-none"
-                      title="교사용 모드 로그아웃"
-                    >
-                      <LogOut className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                </div>
 
-              </div>
+                  {/* 학생 제출 기록 목록 */}
+                  <div className="p-6 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">
+                    <div className="flex items-center justify-between mb-4">
+                      <h3 className="font-bold text-lg text-slate-900 dark:text-white">학생 실시간 풀이 내역</h3>
+                      <span className="text-xs text-slate-400">최신순 정렬</span>
+                    </div>
 
-              {/* 학생 제출 상세 기록 표 */}
-              <div className="p-6 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">
-                <div className="flex items-center justify-between mb-4">
-                  <h3 className="font-bold text-lg text-slate-900 dark:text-white">학생 실시간 풀이 내역 (실시간 수신 대기 중)</h3>
-                  <span className="text-xs text-slate-400">최신순 정렬</span>
-                </div>
-
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left text-sm text-slate-600 dark:text-slate-400">
-                    <thead>
-                      <tr className="border-b border-slate-200 dark:border-slate-800 text-xs text-slate-400 uppercase tracking-wider bg-slate-50/50 dark:bg-slate-950/20">
-                        <th className="px-4 py-3 font-semibold">학번</th>
-                        <th className="px-4 py-3 font-semibold">단원</th>
-                        <th className="px-4 py-3 font-semibold">출제된 수치</th>
-                        <th className="px-4 py-3 font-semibold">제출 답안</th>
-                        <th className="px-4 py-3 font-semibold">실제 정답</th>
-                        <th className="px-4 py-3 font-semibold">채점</th>
-                        <th className="px-4 py-3 font-semibold text-right">제출 시간</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100 dark:divide-slate-800/80">
-                      {allSubmissions.length === 0 ? (
-                        <tr>
-                          <td colSpan={7} className="text-center py-12 text-slate-400 font-medium">
-                            제출된 기록이 아직 없습니다. 학생들이 퀴즈를 풀면 실시간으로 여기에 누적됩니다!
-                          </td>
-                        </tr>
-                      ) : (
-                        allSubmissions.map((sub) => (
-                          <tr key={sub.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-950/10">
-                            <td className="px-4 py-4 font-semibold text-slate-900 dark:text-white">{sub.student_number}</td>
-                            <td className="px-4 py-4 text-xs font-semibold">{sub.unit}</td>
-                            <td className="px-4 py-4 font-mono text-xs text-slate-500">
-                              {Object.keys(sub.variables).map((k) => `${k}: ${sub.variables[k]}`).join(", ")}
-                            </td>
-                            <td className="px-4 py-4 font-semibold text-slate-900 dark:text-white">{sub.submitted_answer}</td>
-                            <td className="px-4 py-4 font-semibold text-indigo-600 dark:text-indigo-400">{sub.correct_answer}</td>
-                            <td className="px-4 py-4">
-                              {sub.is_correct ? (
-                                <span className="inline-flex items-center gap-0.5 px-2.5 py-1 rounded-full bg-emerald-50 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-400 font-bold text-xs">
-                                  <Check className="w-3.5 h-3.5" />
-                                  정답
-                                </span>
-                              ) : (
-                                <span className="inline-flex items-center gap-0.5 px-2.5 py-1 rounded-full bg-rose-50 dark:bg-rose-950/30 text-rose-700 dark:text-rose-400 font-bold text-xs">
-                                  <XCircle className="w-3.5 h-3.5" />
-                                  오답
-                                </span>
-                              )}
-                            </td>
-                            <td className="px-4 py-4 text-right text-xs text-slate-400">
-                              {new Date(sub.created_at).toLocaleTimeString("ko-KR", {
-                                hour: "2-digit",
-                                minute: "2-digit",
-                                second: "2-digit"
-                              })}
-                            </td>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-sm text-slate-600 dark:text-slate-400">
+                        <thead>
+                          <tr className="border-b border-slate-200 dark:border-slate-800 text-xs text-slate-400 uppercase tracking-wider bg-slate-50/50 dark:bg-slate-950/20">
+                            <th className="px-4 py-3 font-semibold">학번</th>
+                            <th className="px-4 py-3 font-semibold">단원</th>
+                            <th className="px-4 py-3 font-semibold">출제된 수치</th>
+                            <th className="px-4 py-3 font-semibold">제출 답안</th>
+                            <th className="px-4 py-3 font-semibold">실제 정답</th>
+                            <th className="px-4 py-3 font-semibold">채점</th>
+                            <th className="px-4 py-3 font-semibold text-right">제출 시간</th>
                           </tr>
-                        ))
-                      )}
-                    </tbody>
-                  </table>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100 dark:divide-slate-800/80">
+                          {allSubmissions.length === 0 ? (
+                            <tr>
+                              <td colSpan={7} className="text-center py-12 text-slate-400 font-medium">
+                                학생들이 문제를 풀면 실시간으로 여기에 제출 기록이 수집됩니다!
+                              </td>
+                            </tr>
+                          ) : (
+                            allSubmissions.map((sub) => (
+                              <tr key={sub.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-950/10">
+                                <td className="px-4 py-4 font-semibold text-slate-900 dark:text-white">{sub.student_number}</td>
+                                <td className="px-4 py-4 text-xs font-semibold">{sub.unit}</td>
+                                <td className="px-4 py-4 font-mono text-xs text-slate-500">
+                                  {Object.keys(sub.variables).map((k) => `${k}: ${sub.variables[k]}`).join(", ")}
+                                </td>
+                                <td className="px-4 py-4 font-semibold text-slate-900 dark:text-white">{sub.submitted_answer}</td>
+                                <td className="px-4 py-4 font-semibold text-indigo-600 dark:text-indigo-400">{sub.correct_answer}</td>
+                                <td className="px-4 py-4">
+                                  {sub.is_correct ? (
+                                    <span className="inline-flex items-center gap-0.5 px-2.5 py-1 rounded-full bg-emerald-50 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-400 font-bold text-xs">
+                                      <Check className="w-3.5 h-3.5" />
+                                      정답
+                                    </span>
+                                  ) : (
+                                    <span className="inline-flex items-center gap-0.5 px-2.5 py-1 rounded-full bg-rose-50 dark:bg-rose-950/30 text-rose-700 dark:text-rose-400 font-bold text-xs">
+                                      <XCircle className="w-3.5 h-3.5" />
+                                      오답
+                                    </span>
+                                  )}
+                                </td>
+                                <td className="px-4 py-4 text-right text-xs text-slate-400">
+                                  {new Date(sub.created_at).toLocaleTimeString("ko-KR", {
+                                    hour: "2-digit",
+                                    minute: "2-digit",
+                                    second: "2-digit"
+                                  })}
+                                </td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
                 </div>
-              </div>
+              )}
+
+              {/* [서브 탭 B] AI 문제 출제 및 관리 */}
+              {teacherSubTab === "publish" && (
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                  
+                  {/* 왼쪽: 출제 문제 신규 생성 컨트롤러 */}
+                  <div className="lg:col-span-1 space-y-6">
+                    <div className="p-6 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm">
+                      <h3 className="font-bold text-lg text-slate-900 dark:text-white mb-4 flex items-center gap-2">
+                        <Sparkles className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
+                        AI 기반 신규 문제 출제
+                      </h3>
+                      
+                      <div className="space-y-4">
+                        <div>
+                          <label className="block text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase mb-2">
+                            출제 단원 선택
+                          </label>
+                          <select
+                            value={selectedTemplateUnit}
+                            onChange={(e) => setSelectedTemplateUnit(e.target.value)}
+                            className="w-full px-4 py-3 border border-slate-200 dark:border-slate-800 rounded-xl bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-white font-semibold focus:ring-2 focus:ring-indigo-500 outline-none"
+                          >
+                            <option value="힘과 운동">힘과 운동</option>
+                            <option value="전자기">전자기</option>
+                          </select>
+                        </div>
+
+                        <button
+                          onClick={handleTeacherGenerateQuestion}
+                          disabled={aiGeneratingQuestion}
+                          className="w-full py-3.5 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white font-semibold rounded-xl shadow-md transition-all flex items-center justify-center gap-2"
+                        >
+                          {aiGeneratingQuestion ? (
+                            <RefreshCw className="w-5 h-5 animate-spin" />
+                          ) : (
+                            <Sparkles className="w-5 h-5" />
+                          )}
+                          <span>AI 물리 문제 지문 생성</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* AI 출제 프리뷰 카드 */}
+                    {aiNewQuestion && (
+                      <div className="p-6 rounded-3xl bg-indigo-50/20 dark:bg-indigo-950/10 border border-indigo-200 dark:border-indigo-800/80 shadow-md space-y-4 animate-in fade-in slide-in-from-bottom-2 duration-300">
+                        <div className="flex items-center justify-between">
+                          <span className="px-2.5 py-0.5 rounded-full bg-indigo-100 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300 text-xs font-bold">
+                            출제 대기 중 (PREVIEW)
+                          </span>
+                          <span className="text-xs text-slate-400">{aiNewQuestion.unit}</span>
+                        </div>
+
+                        <h4 className="font-bold text-slate-900 dark:text-white">
+                          {aiNewQuestion.title}
+                        </h4>
+
+                        <div className="p-4 rounded-xl bg-white dark:bg-slate-950 border border-indigo-100 dark:border-indigo-900 text-xs text-slate-700 dark:text-slate-300 leading-relaxed font-medium">
+                          {aiNewQuestion.renderedText}
+                        </div>
+
+                        <div className="text-xs space-y-1 text-slate-500">
+                          <p>🎯 계산된 정답: <strong className="text-indigo-600 dark:text-indigo-400">{aiNewQuestion.calculatedAnswer} {aiNewQuestion.unit_symbol}</strong></p>
+                          <p>🧮 산출 수식: <code className="bg-slate-100 dark:bg-slate-900 px-1 py-0.5 rounded">{aiNewQuestion.answer_formula}</code></p>
+                          <p>📊 적용 변수: <code className="bg-slate-100 dark:bg-slate-900 px-1 py-0.5 rounded">{JSON.stringify(aiNewQuestion.variables)}</code></p>
+                        </div>
+
+                        <button
+                          onClick={handleTeacherPublishQuestion}
+                          className="w-full py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl shadow-md flex items-center justify-center gap-1.5 transition-all outline-none"
+                        >
+                          <Check className="w-4 h-4" />
+                          <span>학생들에게 이 문제 출제하기</span>
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 오른쪽: 현재 출제 완료된 문제 목록 및 삭제 컨트롤 */}
+                  <div className="lg:col-span-2 space-y-6">
+                    <div className="p-6 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm">
+                      <div className="flex items-center justify-between mb-4">
+                        <h3 className="font-bold text-lg text-slate-900 dark:text-white">학생들에게 활성화된 출제 목록</h3>
+                        <span className="text-xs text-slate-400">
+                          총 {dbQuestions.filter(q => q.correct_answer !== null).length}개 출제 중
+                        </span>
+                      </div>
+
+                      <div className="space-y-4">
+                        {dbQuestions.filter(q => q.correct_answer !== null).length === 0 ? (
+                          <div className="p-12 text-center text-slate-400 text-sm font-medium border border-dashed border-slate-200 dark:border-slate-800 rounded-2xl">
+                            현재 AI로 직접 출제한 문제가 없습니다.<br />
+                            (출제된 문제가 없으면 학생들에게 데모 기본 템플릿 문제가 노출됩니다.)
+                          </div>
+                        ) : (
+                          dbQuestions.filter(q => q.correct_answer !== null).map((q) => (
+                            <div
+                              key={q.id}
+                              className="p-5 rounded-2xl border border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-950/20 flex flex-col md:flex-row justify-between items-start md:items-center gap-4 transition-all hover:bg-slate-50 dark:hover:bg-slate-950/40"
+                            >
+                              <div className="space-y-1.5 flex-grow">
+                                <div className="flex items-center gap-2">
+                                  <span className="px-2 py-0.5 rounded bg-slate-200 dark:bg-slate-800 text-[10px] font-bold text-slate-600 dark:text-slate-300">
+                                    {q.unit}
+                                  </span>
+                                  <h4 className="font-bold text-slate-900 dark:text-white text-sm">
+                                    {q.title}
+                                  </h4>
+                                </div>
+                                <p className="text-xs text-slate-600 dark:text-slate-400 line-clamp-2 leading-relaxed">
+                                  {q.template_text}
+                                </p>
+                                <div className="text-[10px] text-slate-400 flex items-center gap-3">
+                                  <span>정답: <strong className="text-indigo-600 dark:text-indigo-400">{q.correct_answer} {q.unit_symbol}</strong></span>
+                                  <span>수식: {q.answer_formula}</span>
+                                </div>
+                              </div>
+                              <button
+                                onClick={() => handleTeacherDeleteQuestion(q.id)}
+                                className="p-2 text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/30 rounded-xl transition-all"
+                                title="문제 삭제"
+                              >
+                                <Trash2 className="w-5 h-5" />
+                              </button>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                </div>
+              )}
+
             </>
           )}
 
