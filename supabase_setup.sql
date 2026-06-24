@@ -1,5 +1,6 @@
 -- 1. 기존 테이블이 존재할 경우 삭제 (순서 주의: 외래키 의존성)
 DROP TABLE IF EXISTS student_submissions;
+DROP TABLE IF EXISTS student_users;
 DROP TABLE IF EXISTS questions;
 
 -- 2. 질문(문제 템플릿) 테이블 생성
@@ -14,11 +15,18 @@ CREATE TABLE questions (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 3. 학생 제출(채점 결과) 테이블 생성
+-- 3. 학생 회원 테이블 생성
+CREATE TABLE student_users (
+    student_number VARCHAR(50) PRIMARY KEY,   -- 학번 (아이디)
+    password VARCHAR(255) NOT NULL,           -- 비밀번호 (초기값은 학번)
+    is_password_changed BOOLEAN NOT NULL DEFAULT FALSE, -- 비밀번호 변경 여부
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 4. 학생 제출(채점 결과) 테이블 생성
 CREATE TABLE student_submissions (
     id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-    student_name VARCHAR(100) NOT NULL,       -- 학생 이름
-    student_number VARCHAR(50) NOT NULL,      -- 학생 학번 (예: 30101)
+    student_number VARCHAR(50) NOT NULL REFERENCES student_users(student_number) ON DELETE CASCADE, -- 학생 학번
     unit VARCHAR(100) NOT NULL,               -- 단원 분류
     question_id BIGINT REFERENCES questions(id) ON DELETE CASCADE, -- 연결된 문제 ID
     variables JSONB NOT NULL,                 -- 해당 학생에게 할당되었던 수치 값 (JSON)
@@ -28,7 +36,7 @@ CREATE TABLE student_submissions (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 4. 예시 물리 문제 데이터 삽입
+-- 5. 예시 물리 문제 데이터 삽입
 INSERT INTO questions (unit, title, template_text, variable_config, answer_formula, unit_symbol)
 VALUES
   (
@@ -64,16 +72,26 @@ VALUES
     'W'
   );
 
--- 5. 누구나 조회 및 삽입이 가능하도록 RLS(행 보안 정책) 비활성화 또는 단순 허용 정책 적용
--- (교육 연구용 목적이므로 복잡한 정책 설정 대신 읽기/쓰기를 모두 허용합니다.)
+-- 6. 행 보안 정책(RLS) 활성화 및 허용 정책 적용
 ALTER TABLE questions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE student_users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE student_submissions ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY "Allow public read to questions" ON questions
     FOR SELECT TO public USING (true);
+
+CREATE POLICY "Allow public select on student_users" ON student_users
+    FOR SELECT TO public USING (true);
+
+CREATE POLICY "Allow public insert on student_users" ON student_users
+    FOR INSERT TO public WITH CHECK (true);
+
+CREATE POLICY "Allow public update on student_users" ON student_users
+    FOR UPDATE TO public USING (true);
 
 CREATE POLICY "Allow public insert to submissions" ON student_submissions
     FOR INSERT TO public WITH CHECK (true);
 
 CREATE POLICY "Allow public read to submissions" ON student_submissions
     FOR SELECT TO public USING (true);
+
