@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
+import Link from "next/link";
 import { Rabbit, Menu, X, ArrowRight, Sparkles, Cpu, BookOpen, Layers } from "lucide-react";
 
 export default function Home() {
@@ -39,12 +40,12 @@ export default function Home() {
 
           {/* 데스크톱 액션 버튼 */}
           <div className="hidden md:block">
-            <button 
-              onClick={handlePlaceholderClick}
+            <Link 
+              href="/quiz"
               className="inline-flex items-center justify-center px-4 py-2 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-xl shadow-md shadow-indigo-200 dark:shadow-none hover:shadow-lg transition-all hover:-translate-y-0.5 active:translate-y-0"
             >
-              대시보드
-            </button>
+              퀴즈 보드 입장
+            </Link>
           </div>
 
           {/* 모바일 햄버거 메뉴 버튼 */}
@@ -66,12 +67,12 @@ export default function Home() {
             <a href="#" className="block px-3 py-2 rounded-lg text-base font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800">소개</a>
             <a href="#" className="block px-3 py-2 rounded-lg text-base font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800">시뮬레이션</a>
             <a href="#" className="block px-3 py-2 rounded-lg text-base font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800">연락처</a>
-            <button 
-              onClick={handlePlaceholderClick}
+            <Link 
+              href="/quiz"
               className="w-full mt-2 inline-flex items-center justify-center px-4 py-2.5 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-xl shadow-md transition-all"
             >
-              대시보드
-            </button>
+              퀴즈 보드 입장
+            </Link>
           </div>
         )}
       </header>
@@ -112,13 +113,13 @@ export default function Home() {
 
             {/* 기능 추가를 위한 가짜(Placeholder) 버튼 */}
             <div className="flex flex-col sm:flex-row justify-center items-center gap-4">
-              <button
-                onClick={handlePlaceholderClick}
+              <Link
+                href="/quiz"
                 className="group w-full sm:w-auto inline-flex items-center justify-center gap-2 px-8 py-4 text-base font-semibold text-white bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 rounded-2xl shadow-lg shadow-indigo-200 dark:shadow-none hover:shadow-xl hover:shadow-indigo-300 dark:hover:shadow-none transition-all duration-200 hover:-translate-y-0.5"
               >
-                <span>시뮬레이션 시작하기</span>
+                <span>스마트 퀴즈 풀기</span>
                 <ArrowRight className="w-5 h-5 transition-transform group-hover:translate-x-1" />
-              </button>
+              </Link>
               
               <a
                 href="https://github.com"
