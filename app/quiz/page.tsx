@@ -91,7 +91,7 @@ export default function QuizPage() {
   const [teacherSubTab, setTeacherSubTab] = useState<"status" | "publish">("status");
 
   // 교사용 AI 문제 출제 상태 관리
-  const [selectedTemplateUnit, setSelectedTemplateUnit] = useState("힘과 운동");
+  const [teacherPromptInput, setTeacherPromptInput] = useState("질량 5kg인 물체에 20N의 힘을 가했을 때 물체의 가속도(m/s²)를 구하는 물리 문제를 실생활 맥락의 재미있는 스토리와 함께 출제해줘.");
   const [aiGeneratingQuestion, setAiGeneratingQuestion] = useState(false);
   const [aiNewQuestion, setAiNewQuestion] = useState<any | null>(null);
 
@@ -708,15 +708,11 @@ export default function QuizPage() {
     }
   };
 
-  // 교사 AI 문제 생성 핸들러
+  // 교사 AI 문제 생성 핸들러 (커스텀 프롬프트 기반 요구사항)
   const handleTeacherGenerateQuestion = async () => {
-    // correct_answer가 null인 것들이 출제 기준이 되는 템플릿
-    const templates = dbQuestions.filter(
-      (q) => q.correct_answer === null && q.unit === selectedTemplateUnit
-    );
-
-    if (templates.length === 0) {
-      alert("출제할 수 있는 해당 단원의 기본 템플릿이 없습니다. (데이터베이스를 확인하세요)");
+    const cleanPrompt = teacherPromptInput.trim();
+    if (!cleanPrompt) {
+      alert("출제할 문제의 요구사항을 입력해 주세요.");
       return;
     }
 
@@ -730,8 +726,7 @@ export default function QuizPage() {
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          unit: selectedTemplateUnit,
-          templates
+          prompt: cleanPrompt
         })
       });
 
@@ -1452,16 +1447,15 @@ export default function QuizPage() {
                       <div className="space-y-4">
                         <div>
                           <label className="block text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase mb-2">
-                            출제 단원 선택
+                            출제 요구사항 입력 (자연어로 자유롭게 입력)
                           </label>
-                          <select
-                            value={selectedTemplateUnit}
-                            onChange={(e) => setSelectedTemplateUnit(e.target.value)}
-                            className="w-full px-4 py-3 border border-slate-200 dark:border-slate-800 rounded-xl bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-white font-semibold focus:ring-2 focus:ring-indigo-500 outline-none"
-                          >
-                            <option value="힘과 운동">힘과 운동</option>
-                            <option value="전자기">전자기</option>
-                          </select>
+                          <textarea
+                            value={teacherPromptInput}
+                            onChange={(e) => setTeacherPromptInput(e.target.value)}
+                            placeholder="예: 마찰이 없는 빗면을 미끄러져 내려가는 질량 5kg의 상자가 10m 이동했을 때의 속력을 구하는 등가속도 운동 문제를 출제해줘."
+                            rows={4}
+                            className="w-full px-4 py-3 border border-slate-200 dark:border-slate-800 rounded-xl bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-indigo-500 outline-none resize-none leading-relaxed"
+                          />
                         </div>
 
                         <button
